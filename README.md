@@ -422,4 +422,4 @@ Based on the existing architecture, realistic next steps include:
 
 ## License
 
-This project does not yet specify a license. Add a `LICENSE` file to define usage terms.
+This project does not use any license. 

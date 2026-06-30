@@ -1,443 +1,425 @@
 # CodeMentor AI
 
-> Autonomous AI mentor for competitive programming, DSA, and interview preparation.
+CodeMentor AI is a full-stack application that analyzes a user's Codeforces competitive programming history and turns it into a personalized mentoring workflow. A FastAPI backend orchestrates a multi-agent LangGraph pipeline that evaluates a user's strengths and weaknesses, builds a study plan, and recommends real Codeforces problems, while a React frontend presents the resulting analytics, plan, and recommendations in an interactive dashboard.
 
-## Phase 1 — Project Foundation
+## Overview
 
-This phase establishes the complete project skeleton: FastAPI backend, React+Tailwind frontend, PostgreSQL schema, and full frontend↔backend communication.
+Competitive programmers on Codeforces accumulate a large amount of historical data — contest results, submission history, rating changes — but turning that data into an actionable study routine is left entirely to the user. CodeMentor AI addresses this by ingesting a Codeforces handle, computing structured analytics from the public Codeforces API, and running that data through a sequence of deterministic, rule-based agents that:
 
-No agent logic yet. That arrives in Phase 4.
+- identify topic-level strengths and weaknesses,
+- generate a milestone-based study plan with a weekly schedule,
+- recommend specific, real Codeforces problems suited to the user's current level, and
+- persist all of this to a database so future sessions build on prior history rather than starting from scratch.
 
----
+A chat interface, backed by the Google Gemini API (with a deterministic template fallback when no API key is configured), lets the user ask questions about their own analysis, plan, and recommendations in natural language.
 
-## Quick Start
+## Features
 
-### Prerequisites
+**Codeforces analytics**
+- Full ingestion of a Codeforces handle via the public Codeforces API (user info, rating history, submissions, problem set)
+- Computed analytics: current/max rating, rank, solved-problem counts, contest participation, tag-level strength/weakness breakdown, rating trend, and a submission activity heatmap
+- Cached profile lookups, with an explicit `force_refresh` / `refresh` option to re-fetch live data
 
-| Tool | Version |
-|------|---------|
-| Python | 3.11+ |
-| Node.js | 18+ |
-| PostgreSQL | 15+ (optional in Phase 1 — app degrades gracefully without it) |
+**AI mentor workflow**
+- A LangGraph-orchestrated, five-node pipeline (Retrieve Memory → Analyzer → Planner → Recommender → Persist Memory) that runs end-to-end from a single API call
+- Deterministic, rule-based agents that require no LLM credentials to execute
+- A one-button "Analyze My Profile" flow on the frontend that chains Codeforces ingestion, the full agent run, and recommendation retrieval automatically
 
----
+**Study planning**
+- Milestone generation per priority topic, with target problem counts
+- A week-by-week schedule, including periodic revision weeks
+- Estimated time-to-completion based on rating trajectory and user-configured daily goal minutes
+- An editable Learning Path page backed by persistent state
 
-### 1. Backend
+**Problem recommendation engine**
+- Four recommendation strategies — reinforcement, advancement, recovery, and contest preparation — selected based on the user's analyzed weaknesses, strengths, and recent solve streak
+- Every recommended problem is drawn from the live Codeforces `problemset.problems` endpoint; the agent does not fabricate problems
+- Recommendations are filtered against the user's actual solved problems and recently-shown recommendations to avoid repeats
+- Per-problem difficulty-match scoring, estimated solve time, and a human-readable recommendation reason
 
-```bash
-cd backend
+**Learning memory system**
+- Long-term `UserProfile`, per-topic `TopicRating`, `LearningPath`, and `UserPreference` records
+- Short-term, per-chat-session memory (`SessionMemory`) holding a rolling conversation buffer and scratch agent state
+- Historical records: `StudySession`, `LearningMilestone`, `Recommendation`, and `ProgressSnapshot`
+- A single `MemoryService` layer providing CRUD and an aggregate overview across all of the above
 
-# Create and activate virtual environment
-python3 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+**Progress tracking**
+- Point-in-time rating/topic snapshots used to compute improvement velocity
+- A rating-over-time chart and dedicated Progress Tracking page
 
-# Install dependencies
-pip install -r requirements.txt
+**Chat assistant**
+- A Gemini-backed conversational endpoint that grounds replies in the user's actual strengths, weaknesses, active study plan, milestones, recent study sessions, and current recommendations
+- Falls back to a deterministic, memory-grounded template reply if no Gemini API key is configured or the API call fails
+- Persists every message to both the long-lived chat session record and the short-term session memory buffer
 
-# Configure environment
-cp .env.example .env
-# Open .env and add at minimum:
-#   GEMINI_API_KEY=your_key_here
-# PostgreSQL is optional for Phase 1 — the app runs without it
-# (health endpoint will show database: unreachable, which is fine)
+**Agent tracing**
+- Every orchestrator run is persisted as an `AgentRun` with one `AgentTrace` row per graph node, recording per-node duration and output summary
+- A frontend Agent Trace Panel renders the node-by-node execution (including thread/run identifiers) for transparency into what each agent did and why
 
-# Start server
-uvicorn app.main:app --reload --port 8000
+**User analytics and dashboards**
+- A System Status dashboard (the original health/status view) showing live API health
+- A Mentor Dashboard combining CF profile stats, strengths/weaknesses, the study plan with a visual roadmap, recommended problem cards, and the agent trace panel in one view
+- A dedicated, filterable (pending / solved / bookmarked) problem browser
+
+## System Architecture
+
+CodeMentor AI follows a layered backend architecture (API → services → agents/data) paired with a component-based React frontend. The agent workflow is a linear LangGraph state machine sitting between the API layer and the persistence layer.
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                              FRONTEND (React)                           │
+│  Pages: Home · Mentor Dashboard · Chat · CF Profile · Learning Path ·   │
+│  Problems · Memory (Overview/Profile/History/Progress/Preferences) ·    │
+│  Agent Dashboard · Study Planner · System Status                       │
+│  axios client (src/utils/api.ts) ──────────────────────────────────┐    │
+└──────────────────────────────────────────────────────────────────┼────┘
+                                                                     │ HTTP / JSON
+                                                                     ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         BACKEND (FastAPI, /api/v1)                      │
+│  routes: health · users · chat · codeforces · memory · agents ·        │
+│          recommendations                                               │
+└───────────┬─────────────────────────────────────────────┬─────────────┘
+            │                                              │
+            ▼                                              ▼
+┌────────────────────────────┐               ┌─────────────────────────────┐
+│       Services layer        │               │     Agent / LangGraph layer │
+│  CodeforcesService          │               │  START                      │
+│  MemoryService              │◄─────────────►│   → RetrieveMemory          │
+│  AgentService                │               │   → AnalyzerAgent           │
+│  RecommenderService          │               │   → PlannerAgent            │
+│  ProblemPoolService           │              │   → RecommenderAgent        │
+└───────────┬─────────────────┘               │   → PersistMemory           │
+            │                                  │  END                        │
+            ▼                                  └──────────────┬──────────────┘
+┌────────────────────────────┐                                │
+│   SQLAlchemy (async) ORM    │◄───────────────────────────────┘
+│   PostgreSQL                │
+└───────────┬─────────────────┘
+            │
+            ▼
+┌────────────────────────────┐
+│   External: Codeforces API  │   (problemset.problems, user.info,
+│   External: Gemini API      │    user.rating, user.status)
+└────────────────────────────┘
 ```
 
-Backend runs at: http://localhost:8000
-API docs at:     http://localhost:8000/docs
+**Frontend** — A Vite + React + TypeScript single-page application using React Router for navigation and Tailwind CSS for styling. Components are organized by domain (codeforces, agents, memory, recommendations) and communicate with the backend through a shared axios client.
 
----
+**Backend** — A FastAPI application exposing a versioned REST API under `/api/v1`. On startup, the application attempts to initialize the database connection but degrades gracefully (continues running, reporting `database: unreachable` on the health endpoint) if PostgreSQL is not available.
 
-### 2. Frontend
+**Database** — PostgreSQL accessed through SQLAlchemy's async ORM (`asyncpg` driver) for the application and a synchronous driver (`psycopg2`) for Alembic migrations. Schema changes are tracked through Alembic migration scripts.
 
-```bash
-cd frontend
+**Agent workflow** — A LangGraph `StateGraph` of five nodes, compiled once and invoked per request via `graph.ainvoke(...)`. The graph is strictly linear: no conditional routing, branching, or reflection loops are implemented.
 
-# Install dependencies
-npm install
+**External APIs** — The public Codeforces REST API (`https://codeforces.com/api`) for all competitive programming data, and the Google Gemini API (`gemini-2.5-flash`, called directly over its REST endpoint via `httpx`) for natural-language chat replies.
 
-# Configure environment
-cp .env.example .env
+## Technology Stack
 
-# Start dev server
-npm run dev
-```
-
-Frontend runs at: http://localhost:5173
-
----
-
-### 3. (Optional) PostgreSQL
-
-```bash
-# macOS
-brew install postgresql@15 && brew services start postgresql@15
-
-# Ubuntu
-sudo apt install postgresql && sudo service postgresql start
-
-# Create database
-psql -U postgres -c "CREATE DATABASE codementor;"
-
-# Update backend/.env
-DATABASE_URL=postgresql+asyncpg://postgres:password@localhost:5432/codementor
-SYNC_DATABASE_URL=postgresql+psycopg2://postgres:password@localhost:5432/codementor
-```
-
----
-
-## Running Tests
-
-```bash
-cd backend
-source .venv/bin/activate
-pytest tests/test_phase1.py -v
-```
-
-Expected output:
-```
-tests/test_phase1.py::test_ping         PASSED
-tests/test_phase1.py::test_root         PASSED
-tests/test_phase1.py::test_chat_stub    PASSED
-3 passed
-```
-
----
-
-## Phase 1 Verification Checklist
-
-- [ ] `http://localhost:8000/docs` — Swagger UI loads showing 6 endpoints
-- [ ] `GET /api/v1/health/ping` returns `{"ping": "pong"}`
-- [ ] `GET /api/v1/health` returns status, env, llm_provider, database fields
-- [ ] `POST /api/v1/chat` with a JSON body returns a stub assistant reply
-- [ ] `http://localhost:5173` — Dashboard loads with sidebar navigation
-- [ ] Dashboard status cards show API status in real-time
-- [ ] Navigating to `/chat`, entering a handle, and sending a message receives a reply
-- [ ] Agent trace panel toggles open and shows the stub trace
-- [ ] All 3 pytest tests pass
-
----
+| Layer | Technology |
+|---|---|
+| Frontend | React 18, TypeScript, Vite, React Router 6, Tailwind CSS, axios |
+| Backend | FastAPI, Uvicorn, Pydantic v2 / pydantic-settings |
+| Database | PostgreSQL, SQLAlchemy 2.0 (async, `asyncpg`), Alembic migrations |
+| AI / Agent Framework | LangGraph, LangChain core, Google Gemini (via `langchain-google-genai` and direct REST calls), LangSmith (optional tracing) |
+| Data Visualization | Recharts (rating trend, progress, tag charts), custom heatmap component |
+| External APIs | Codeforces public API, Google Gemini API |
+| Development Tools | pytest, pytest-asyncio, respx (HTTP mocking), aiosqlite (in-memory test DB), ESLint, ngrok-free local dev scripts (`scripts/`) |
 
 ## Project Structure
 
 ```
-codementor-ai/
+CodeMentor-AI/
 ├── backend/
 │   ├── app/
-│   │   ├── api/routes/     health, users, chat endpoints
-│   │   ├── core/           config, logging
-│   │   ├── db/             async SQLAlchemy session
-│   │   ├── models/         User, ChatSession ORM models
-│   │   ├── schemas/        Pydantic request/response models
-│   │   └── main.py         FastAPI app with lifespan
-│   ├── tests/
+│   │   ├── api/routes/         # health, users, chat, codeforces, memory, agents, recommendations
+│   │   ├── agents/             # analyzer.py, planner.py, recommender.py, graph.py, state.py
+│   │   ├── codeforces/         # client.py, analytics.py, models.py, exceptions.py
+│   │   ├── core/                # config.py, logging.py
+│   │   ├── db/                  # async SQLAlchemy session/engine
+│   │   ├── models/              # user, session, memory, agent, recommendation_engine ORM models
+│   │   ├── schemas/             # Pydantic request/response models
+│   │   ├── services/            # codeforces_service, memory_service, agent_service,
+│   │   │                        # recommender_service, problem_pool_service
+│   │   ├── tools/                # codeforces_tools.py (LangGraph tool wrapper)
+│   │   └── main.py               # FastAPI app + lifespan
+│   ├── alembic/                 # migration environment + versioned scripts
+│   ├── tests/                   # test_phase1.py … test_phase5.py, conftest.py
 │   ├── requirements.txt
 │   └── .env.example
 ├── frontend/
 │   ├── src/
-│   │   ├── components/     Sidebar, AppLayout, HealthBadge
-│   │   ├── pages/          Dashboard, Chat, placeholders
-│   │   ├── utils/          api.ts (axios), cn.ts
-│   │   └── styles/         globals.css (Tailwind)
+│   │   ├── components/          # agents/, codeforces/, layout/, memory/, recommendations/, ui/
+│   │   ├── pages/                # Home, Mentor Dashboard, Chat, CF Profile, Learning Path,
+│   │   │                        # Problems, Memory*, Agent Dashboard, Study Planner, Status
+│   │   ├── hooks/                # useActiveHandle, useCFProfile, useMemoryOverview
+│   │   ├── utils/                # api.ts (axios client), cn.ts
+│   │   ├── styles/               # globals.css (Tailwind)
+│   │   └── router.tsx
 │   ├── package.json
 │   └── .env.example
 ├── scripts/
-│   ├── run_backend.sh
-│   ├── run_frontend.sh
+│   ├── run_backend.sh           # venv setup + uvicorn
+│   ├── run_frontend.sh          # npm install + vite dev
 │   └── test_backend.sh
 └── README.md
 ```
 
----
+## Core Components
 
-## Phase Roadmap
+### Backend
 
-| Phase | Description | Status |
-|-------|-------------|--------|
-| 1 | Project foundation (this phase) | ✅ |
-| 2 | Codeforces API tool | ⏳ |
-| 3 | Database + persistent memory | ⏳ |
-| 4 | Analyzer Agent (MVP) | ⏳ |
-| 5 | LangGraph workflow | ⏳ |
-| 6 | RAG system | ⏳ |
-| 7 | Remaining agents | ⏳ |
-| 8 | Full frontend | ⏳ |
-| 9 | PDF + LangSmith | ⏳ |
-| 10 | Testing + deployment | ⏳ |
+**FastAPI application** (`app/main.py`) — Configures CORS from the `ALLOWED_ORIGINS` setting, registers the versioned API router, and uses an async context manager (`lifespan`) to initialize the database on startup and close the connection on shutdown. Database initialization failures are logged as warnings rather than raised, so the API remains usable without a running PostgreSQL instance.
 
----
+**Services layer** (`app/services/`) — Each service wraps a single area of responsibility behind an async interface used by the API routes and the agent graph nodes:
+- `CodeforcesService` — ingestion, caching, and retrieval of CF profile analytics
+- `MemoryService` — single point of access for every long-term, short-term, and historical memory entity, plus an aggregate `get_overview()`
+- `AgentService` — streams the compiled LangGraph node-by-node, timing and persisting each step (`AgentRun`, `AgentTrace`, `AnalysisSnapshot`, `PlannerOutput`, `GraphCheckpoint`)
+- `RecommenderService` — fetches the live CF problem pool and the user's solved problems, invokes the pure recommender function, and persists results
+- `ProblemPoolService` — an in-process, TTL-cached (6 hour) wrapper around the CF problem set, filtered to rated, contest-linked problems
 
-## Phase 3 — Persistent Memory & User Modeling Layer
+**Database layer** (`app/db/`, `app/models/`) — An async SQLAlchemy engine/session factory and a declarative `Base`. ORM models are grouped by domain: `User`/`ChatSession` (core), `UserProfile`/`TopicRating`/`LearningPath`/`SessionMemory`/`StudySession`/`LearningMilestone`/`Recommendation`/`ProgressSnapshot`/`UserPreference`/`AgentCheckpoint` (memory), `AgentRun`/`AgentTrace`/`AnalysisSnapshot`/`PlannerOutput`/`GraphCheckpoint` (agent execution), and `RecommendedProblem`/`ProblemAttempt`/`RecommendationSession` (recommendation engine).
 
-Phase 3 adds the memory infrastructure that future agents (Orchestrator,
-Analyzer, Planner, Recommender, Explainer, Reflection — **not implemented
-yet**) will read from and write to. No agent or LangGraph logic is added in
-this phase; it is pure persistence.
+**Agent layer** (`app/agents/`) — Typed state definitions (`MentorGraphState`, `MemorySnapshot`, `AnalyzerResult`, `PlannerResult`) and three pure, synchronous functions (`run_analyzer_agent`, `run_planner_agent`, `run_recommender_agent`) with no I/O, wired together by `graph.py` into a compiled LangGraph `StateGraph`.
 
-### What was added
+**Codeforces integration** (`app/codeforces/`) — An async HTTP client (`CodeforcesClient`) wrapping the public Codeforces API with retry and exponential backoff, typed Pydantic response models, and a dedicated exception hierarchy (`CFHandleNotFound`, `CFAPIError`, `CFRateLimitError`). A separate, pure `analytics.py` module converts raw API responses into the structured analytics blob stored on each `User` row.
 
-**Long-term memory** (`app/models/memory.py`)
-- `UserProfile` — bio, goals, strengths/weaknesses, streaks, improvement velocity, session summary cache, contest history snapshots
-- `TopicRating` — per-topic skill rating, solved/failed counts, strength/weakness classification
-- `LearningPath` — current stage, goal, progress %, full path state
-- `UserPreference` — preferred difficulty/topics, daily goal, theme, language
+**Recommendation engine** (`app/agents/recommender.py`) — Implements four selection strategies (reinforcement, advancement, recovery, contest prep), each operating over a caller-supplied problem pool and the user's real solve history, so recommendations are always traceable to an actual Codeforces problem.
 
-**Short-term (session) memory**
-- `SessionMemory` — one row per chat `session_id`: rolling conversation buffer, current goals/problems, topics discussed, free-form `agent_state` scratch space
+### Frontend
 
-**Learning history**
-- `StudySession` — discrete practice sessions (topic, duration, problems attempted/solved)
-- `LearningMilestone` — achievements over time
-- `Recommendation` — stored problem/topic/path/concept recommendations with status tracking
-- `ProgressSnapshot` — point-in-time rating/topic snapshots, used to compute improvement velocity
+**React architecture** — A component-driven SPA built with Vite, using functional components and hooks throughout. UI primitives (`HealthBadge`, `Skeleton`) sit under `components/ui`, with domain-specific components grouped under `components/codeforces`, `components/agents`, `components/memory`, and `components/recommendations`.
 
-**LangGraph preparation**
-- `AgentCheckpoint` table + inline comments in `app/models/memory.py` marking exactly where a future `BaseCheckpointSaver` implementation would plug in. Unused by any agent today — purely there so the schema is ready.
+**Routing** — `react-router-dom`'s `createBrowserRouter`, with a single `AppLayout` wrapping all routes and a nested route table covering the home, mentor dashboard, chat, CF profile, learning path, problems, memory (overview/profile/history/progress/preferences), agent dashboard, study planner, and system status pages.
 
-**Retrieval/update service layer**
-- `app/services/memory_service.py` — `MemoryService` is the single point of access for all of the above (get/create/update profile, topic ratings, learning path, study sessions, milestones, session memory, recommendations, progress snapshots, preferences, plus an aggregate `get_overview()`).
+**State management** — Local component state and custom hooks (`useActiveHandle`, `useCFProfile`, `useMemoryOverview`) rather than a global state library; data is fetched directly from the backend per page via the shared axios client in `utils/api.ts`.
 
-**API**
-- New router at `/api/v1/memory/*` (see `app/api/routes/memory.py`) — full CRUD over every memory entity, plus `/memory/overview/{cf_handle}` for the dashboard.
+**Visualization components** — `RatingChart`, `DifficultyChart`, `TagCharts`, and `ActivityHeatmap` (built on Recharts and custom SVG) render CF profile analytics; `LearningRoadmap` visualizes planner milestones.
 
-**Frontend**
-- New pages: Memory Overview (`/memory`), User Profile (`/memory/profile`), Learning History (`/memory/history`, includes study sessions + chat sessions + milestones), Progress Tracking (`/memory/progress`, rating-over-time chart), Preferences (`/memory/preferences`)
-- `Learning Path` (`/roadmap`) upgraded from a placeholder to a real, editable page backed by the new API
-- New `memoryApi` client (`src/utils/api.ts`) and `useActiveHandle` / `useMemoryOverview` hooks
-- Sidebar updated with a "Memory" nav group
+**Dashboard system** — `MentorHomePage` provides the single-button entry point (handle input → ingest → full agent run → recommendations, with a live step indicator); `MentorDashboardPage` is the consolidated product view; `DashboardPage` (mounted at `/status`) is the original system-health view preserved from the project's first phase.
 
-**Tests** — `backend/tests/test_phase3.py` + `backend/tests/conftest.py`
-- Real persistence/retrieval tests against an in-memory SQLite DB (not mocked) covering every memory entity, plus API-level tests over the new `/memory` routes.
+### Multi-Agent Workflow
 
-### Database migrations
+The LangGraph workflow is a strict linear sequence: `START → RetrieveMemory → AnalyzerAgent → PlannerAgent → RecommenderAgent → PersistMemory → END`. No conditional routing or reflection loops are implemented.
 
-This project previously relied on `Base.metadata.create_all()` (called from `app/main.py` on startup) rather than Alembic. Phase 3 adds proper Alembic scaffolding (`backend/alembic/`) so future schema changes are tracked:
+- **Retrieve Memory** — An async node that loads the user's full memory snapshot (profile, topic ratings, learning path, recent study sessions, recent recommendations, progress snapshots, preferences, and cached CF analytics) through `MemoryService` and assembles it into a single `MemorySnapshot` passed to the rest of the graph.
+- **Analyzer Agent** — A pure function that computes strengths, weaknesses, priority topics, improvement velocity, rating trajectory, and topic confidence scores from the memory snapshot, producing a human-readable analysis summary. Deterministic and requires no external API calls.
+- **Planner Agent** — A pure function that turns the Analyzer's output, plus the existing learning path and preferences, into milestones, a week-by-week schedule (including periodic revision weeks), daily/weekly goals, and an estimated completion duration.
+- **Recommender Agent** — Fetches the live Codeforces problem pool and the user's actual solved problems, then applies the reinforcement / advancement / recovery / contest-prep strategies to select real, unsolved, non-repeated problems matched to the analysis.
+- **Persist Memory** — Writes the analysis (strengths/weaknesses) back onto the long-term `UserProfile`, the generated plan onto `LearningPath`, per-topic results onto `TopicRating`, milestones onto `LearningMilestone`, and records a `StudySession` row marking that a full mentor workflow run occurred.
+
+Every node's input/output summary is recorded into a running trace list, which `AgentService` persists as `AgentRun` and `AgentTrace` rows and which the frontend's Agent Trace Panel renders.
+
+## Database Schema
+
+The schema is organized into four groups of related tables, all created additively across migrations `0001_phase3_memory`, `0002_phase4_agents`, and `0003_phase5_recommendations`:
+
+**Core** — `users` (Codeforces handle, rating, cached `cf_analytics` JSON blob) and `chat_sessions` (one row per chat session, with a JSON message list and summary), linked by foreign key.
+
+**Memory** — `user_profile`, `topic_rating`, `learning_path`, and `user_preference` hold long-term, per-user state. `session_memory` holds short-term, per-chat-session scratch state. `study_session`, `learning_milestone`, `recommendation`, and `progress_snapshot` form the historical record that the analyzer and planner read from. `agent_checkpoint` exists as schema preparation for a future `BaseCheckpointSaver` implementation and is not currently written to by any agent.
+
+**Agent execution** — `agent_runs` (one row per orchestrator execution), `agent_traces` (one row per graph node per run, with timing and output summary), `analysis_snapshots` and `planner_outputs` (one row per completed run), and `graph_checkpoints` (full running state per step).
+
+**Recommendation engine** — `recommendation_sessions` (one row per recommendation generation call), `recommended_problems` (individual problem recommendations with status tracking — pending/solved/skipped/bookmarked), and `problem_attempts` (a row per solve/skip/bookmark/attempt action against a recommended problem).
+
+All tables are linked back to a `User` (directly or via `cf_handle`), so every entity in the system is scoped to a single Codeforces profile.
+
+## API Endpoints
+
+All routes are mounted under `/api/v1`.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/health` | Application status, environment, active LLM provider, database reachability |
+| GET | `/health/ping` | Liveness check |
+| POST | `/users` | Create a user record for a Codeforces handle |
+| GET | `/users/{cf_handle}` | Retrieve a user record |
+| POST | `/chat` | Agent- and Gemini-backed chat turn, grounded in persisted memory |
+| POST | `/chat/session` | Create a new chat session |
+| POST | `/codeforces/ingest` | Full ingestion: fetch CF data, compute analytics, persist, return |
+| GET | `/codeforces/{handle}` | Cached or freshly-fetched analytics (`?refresh=true` to force) |
+| GET | `/codeforces/{handle}/summary` | Lightweight profile summary |
+| GET | `/memory/overview/{cf_handle}` | Aggregate profile + topic ratings + learning path + preferences |
+| GET / PUT | `/memory/profile/{cf_handle}` | Long-term user profile |
+| POST | `/memory/profile/{cf_handle}/streak` | Update study streak |
+| GET / PUT | `/memory/topics/{cf_handle}` | Per-topic skill ratings |
+| GET / PUT | `/memory/learning-path/{cf_handle}` | Learning path state |
+| GET / POST | `/memory/study-sessions/{cf_handle}` | Study session history |
+| POST | `/memory/study-sessions/{session_db_id}/end` | Close out a study session |
+| GET / POST | `/memory/milestones/{cf_handle}` | Learning milestones |
+| GET / PUT | `/memory/session/{session_id}` | Short-term session memory |
+| POST | `/memory/session/{session_id}/messages` | Append a message to session memory |
+| POST | `/memory/session/{session_id}/summary` | Summarize a session |
+| GET / POST | `/memory/recommendations/{cf_handle}` | Stored recommendation records (Phase 3 table) |
+| PATCH | `/memory/recommendations/item/{recommendation_id}` | Update a stored recommendation |
+| GET / POST | `/memory/progress/{cf_handle}` | Rating/topic progress snapshots |
+| GET | `/memory/chat-sessions/{cf_handle}` | Chat session summaries |
+| GET / PUT | `/memory/preferences/{cf_handle}` | User preferences |
+| POST | `/agents/analyze` | Run the full graph, tagged as an analysis run |
+| POST | `/agents/plan` | Run the full graph, tagged as a planning run |
+| POST | `/agents/run` | Run the full orchestrator workflow end to end |
+| GET | `/agents/history` | List past agent runs (optionally filtered by handle) |
+| GET | `/agents/traces` | Per-node trace for a given run |
+| GET | `/agents/analysis/{cf_handle}/latest` | Latest persisted analysis |
+| GET | `/agents/plan/{cf_handle}/latest` | Latest persisted plan |
+| POST | `/recommendations/generate` | Generate fresh problem recommendations for a handle |
+| GET | `/recommendations/{cf_handle}` | List recommendations (filter by `pending`/`solved`/`bookmarked`) |
+| PATCH | `/recommendations/item/{id}` | Update a recommendation's status (solve/skip/bookmark/attempt) |
+
+Note: the three `POST /agents/*` routes all execute the same linear graph; "analyze" and "plan" runs are the full graph tagged by intent, since conditional routing is not implemented.
+
+## Key Features Demonstration
+
+1. **User enters a Codeforces handle** on the home page and clicks "Analyze My Profile."
+2. **Analytics generation** — the frontend calls `POST /codeforces/ingest`, which fetches the user's live Codeforces data and computes rating, tag, and activity analytics.
+3. **Weakness analysis** — `POST /agents/run` executes the full LangGraph workflow; the Analyzer Agent scores topic-level strengths and weaknesses from the freshly ingested analytics and existing memory.
+4. **Study plan creation** — the Planner Agent turns the analysis into milestones and a weekly schedule.
+5. **Problem recommendation** — the Recommender Agent selects real Codeforces problems matched to the user's weaknesses, strengths, and recent solve streak.
+6. **Memory persistence** — the Persist Memory node writes strengths/weaknesses, the study plan, topic ratings, and milestones back to the database.
+7. **Progress tracking** — subsequent visits to `/memory/progress` and the Mentor Dashboard reflect the persisted history, and each new agent run builds on top of it rather than starting over.
+
+## Installation
+
+### Backend Setup
 
 ```bash
 cd backend
+
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+
 pip install -r requirements.txt
 
-# Point alembic at a real Postgres instance via backend/.env (DATABASE_URL / SYNC_DATABASE_URL)
+cp .env.example .env
+# edit .env and set at minimum GEMINI_API_KEY
 
-# If this is a brand-new database, let the app create the Phase 1/2 tables first:
+uvicorn app.main:app --reload --port 8000
+```
+
+The backend runs at `http://localhost:8000`; interactive API docs are available at `http://localhost:8000/docs`.
+
+### Frontend Setup
+
+```bash
+cd frontend
+
+npm install
+
+cp .env.example .env
+
+npm run dev
+```
+
+The frontend runs at `http://localhost:5173`.
+
+### Environment Variables
+
+**Backend (`backend/.env`)**
+
+| Variable | Purpose |
+|---|---|
+| `GEMINI_API_KEY` | Google Gemini API key, used by the chat endpoint for LLM-generated replies. If unset, chat falls back to a deterministic template reply. |
+| `OPENAI_API_KEY` | Optional fallback LLM provider key. |
+| `DATABASE_URL` | Async PostgreSQL connection string (`postgresql+asyncpg://...`), used by the application at runtime. |
+| `SYNC_DATABASE_URL` | Synchronous PostgreSQL connection string (`postgresql+psycopg2://...`), used by Alembic. |
+| `LANGCHAIN_TRACING_V2` | Enables LangSmith tracing of agent runs when set to `true`. |
+| `LANGCHAIN_API_KEY` | LangSmith API key, required if tracing is enabled. |
+| `LANGCHAIN_PROJECT` | LangSmith project name. |
+| `APP_ENV` | `development` or `production`; controls log verbosity. |
+| `SECRET_KEY` | Application secret key. |
+| `ALLOWED_ORIGINS` | Comma-separated list of allowed CORS origins for the frontend. |
+
+**Frontend (`frontend/.env`)**
+
+| Variable | Purpose |
+|---|---|
+| `VITE_API_BASE_URL` | Base URL of the backend API (defaults to `http://localhost:8000`). |
+
+PostgreSQL is optional for basic API exploration — the application starts and serves requests even when the database is unreachable, reporting that status on `GET /health`. A working database is required for any endpoint that reads or writes persisted data.
+
+## Running the Application
+
+**Start the backend**
+```bash
+cd backend
+source .venv/bin/activate
+uvicorn app.main:app --reload --port 8000
+```
+
+**Start the frontend**
+```bash
+cd frontend
+npm run dev
+```
+
+**Run migrations** (against a real PostgreSQL instance configured via `DATABASE_URL` / `SYNC_DATABASE_URL`)
+```bash
+cd backend
+
+# If the database is new, create the base (Phase 1/2) tables first:
 python -c "import asyncio; from app.db.session import init_db; asyncio.run(init_db())"
 
-# Then apply the Phase 3 migration to add the memory tables:
+# Apply all tracked migrations:
 alembic upgrade head
 ```
 
-If you're working against an existing database that already has the Phase 1/2 tables (`users`, `chat_sessions`), you can skip straight to `alembic upgrade head` — the migration only creates the new Phase 3 tables.
-
-### Verification checklist
-
-- [ ] `pip install -r backend/requirements.txt` succeeds
-- [ ] `alembic upgrade head` (from `backend/`) creates all 10 new tables without error
-- [ ] `cd backend && pytest -q` — all Phase 1, 2, and 3 tests pass
-- [ ] `POST /api/v1/users` then `POST /api/v1/memory/profile/{handle}/streak` returns a profile with `current_streak_days: 1`
-- [ ] `PUT /api/v1/memory/topics/{handle}` with a low rating returns `is_weakness: true`
-- [ ] `GET /api/v1/memory/overview/{handle}` returns profile + topic_ratings + learning_path + preferences in one payload
-- [ ] Frontend: `/memory`, `/memory/profile`, `/memory/history`, `/memory/progress`, `/memory/preferences`, and `/roadmap` all load and read/write data for a handle that has been created via `POST /api/v1/users`
-- [ ] No agent, LangGraph workflow, or recommendation-generation logic was introduced (confirm by grepping `app/` for `StateGraph` — should return nothing)
-
-### Explicitly NOT implemented in this phase
-
-Per the Phase 3 brief, the following remain unimplemented and are left for later phases: Analyzer Agent, Planner Agent, Problem Recommender Agent, Explainer Agent, Reflection Agent, Orchestrator Agent, LangGraph workflows, and RAG. The `Recommendation` table stores recommendations but nothing currently generates them — that's the future Recommender Agent's job.
-
----
-
-## Phase 4 — Agentic Workflow (LangGraph)
-
-Phase 4 turns the dashboard into an autonomous mentor by introducing the first real LangGraph workflow on top of the Phase 3 memory layer. Nothing from Phases 1-3 was rewritten; this phase only adds new modules and a small number of additive edits (router registrations, schema/model `__init__.py` re-exports, sidebar nav).
-
-### What was implemented
-
-**Agents** (`backend/app/agents/`)
-- `state.py` - typed `MentorGraphState` / `MemorySnapshot` / `AnalyzerResult` / `PlannerResult` TypedDicts threaded through the graph
-- `analyzer.py` - Analyzer Agent: pure function computing strengths, weaknesses, priority topics, improvement velocity, rating trajectory, contest/submission behavior, topic confidence scores, and a human-readable analysis summary from the retrieved memory snapshot. Deterministic/rule-based on top of the existing Phase 2 `cf_analytics` blob and Phase 3 `TopicRating` rows, so it runs with zero external dependencies or API keys.
-- `planner.py` - Planner Agent: pure function turning the Analyzer's output (plus existing learning path / preferences) into a study roadmap: milestones, a week-by-week schedule (with periodic revision weeks), daily/weekly goals, and an estimated completion duration.
-- `graph.py` - the compiled LangGraph `StateGraph`: `START -> RetrieveMemory -> AnalyzerAgent -> PlannerAgent -> PersistMemory -> END`. No conditional routing, no reflection loops, no recommender/explainer agents, no RAG - exactly per the Phase 4 brief. `RetrieveMemory` and `PersistMemory` are async nodes that read/write through the existing `MemoryService` (Phase 3); `AnalyzerAgent` / `PlannerAgent` call straight into the pure functions above.
-
-**Orchestration + persistence** (`backend/app/services/agent_service.py`)
-- `AgentService` streams the compiled graph node-by-node (`astream(..., stream_mode="updates")`), timing and persisting each step as it completes - this is what powers the Agent Trace Panel and the checkpoint table.
-- Persists one `AgentRun` row per orchestrator execution, one `AgentTrace` row per graph node, one `AnalysisSnapshot` and one `PlannerOutput` row per completed run, and one `GraphCheckpoint` row per step with the full running state.
-
-**Database** (`backend/app/models/agent.py`, migration `0002_phase4_agents`)
-- New tables: `agent_runs`, `agent_traces`, `planner_outputs`, `analysis_snapshots`, `graph_checkpoints`.
-
-**API** (`backend/app/api/routes/agents.py`, namespaced under `/api/v1/agents`)
-- `POST /api/v1/agents/analyze` - runs the graph, tagged as an `analyze` run
-- `POST /api/v1/agents/plan` - runs the graph, tagged as a `plan` run
-- `POST /api/v1/agents/run` - runs the full orchestrator workflow (`run_type=full`)
-- `GET  /api/v1/agents/history` - list past runs (optionally filtered by `cf_handle`)
-- `GET  /api/v1/agents/traces?agent_run_id=...` - per-node trace for a run
-- `GET  /api/v1/agents/analysis/{cf_handle}/latest` / `GET /api/v1/agents/plan/{cf_handle}/latest` - convenience reads for the frontend, additive to the spec'd route list
-
-(All three POST routes execute the same linear graph - per the brief, conditional routing isn't implemented, so "analyze-only" and "plan-only" runs are really the full graph tagged by intent. This keeps the LangGraph definition itself exactly as specified.)
-
-**Frontend**
-- `Agent Dashboard` (`/agents`) - current analysis: strengths, weaknesses, priority topics, analysis summary, improvement velocity, plus a "Run Analyzer Agent" button and the trace panel for the resulting run
-- `Study Planner` (`/agents/planner`) - generated roadmap: estimated duration, current stage, milestones, full weekly schedule table, plus a "Generate Study Plan" button
-- `AgentTracePanel` component - expandable per-node execution list showing node name, status, duration, and output summary, with the `thread_id` and the linear graph shown for context
-- `RecommendationsPanel` component - current priority topics, practice goals (from the latest plan's `daily_goals`), and any stored Phase 3 `Recommendation` rows
-- Sidebar updated with a new "Agents" nav group; `agentsApi` client added to `src/utils/api.ts`
-
-**Tests** - `backend/tests/test_phase4.py`
-- Unit tests for the pure `run_analyzer_agent` / `run_planner_agent` functions (required fields, merging long-term memory, declining-trajectory duration padding, empty-state handling)
-- Integration tests compiling and running the actual LangGraph workflow against an in-memory SQLite DB (`graph.ainvoke(...)`), verifying memory persistence
-- `AgentService` tests for run/trace/snapshot/checkpoint persistence and history/trace retrieval
-- API endpoint tests (httpx `AsyncClient` + DB dependency override, same pattern as `test_phase3.py`) for all five required routes plus the two convenience "latest" routes, including a 404 case for an unknown handle
-
-### Database migration
-
+**Run tests**
 ```bash
 cd backend
-pip install -r requirements.txt
-
-# If not already applied:
-alembic upgrade head    # applies 0001_phase3_memory then 0002_phase4_agents
+source .venv/bin/activate
+pytest -q
 ```
 
-If you're on a fresh database, run `python -c "import asyncio; from app.db.session import init_db; asyncio.run(init_db())"` first (or just start the app once) so the Phase 1/2 base tables exist, then run `alembic upgrade head`.
+Convenience scripts are also provided under `scripts/`: `run_backend.sh` (creates the virtual environment, installs dependencies, and starts uvicorn), `run_frontend.sh` (installs npm dependencies and starts the Vite dev server), and `test_backend.sh`.
 
-### Running it
+## Testing
 
-```bash
-# Backend
-cd backend
-pip install -r requirements.txt
-uvicorn app.main:app --reload
+The backend test suite is organized by development phase, with 74 tests across five files (`backend/tests/test_phase1.py` through `test_phase5.py`):
 
-# In another terminal, ingest a CF profile first (agents need cf_analytics + a User row):
-curl -X POST http://localhost:8000/api/v1/codeforces/ingest -H "Content-Type: application/json" -d '{"cf_handle": "tourist", "force_refresh": false}'
+- **Phase 1** — basic API liveness and the original chat stub
+- **Phase 2** — the Codeforces client and analytics engine, including real-HTTP-shape tests via `respx`
+- **Phase 3** — memory persistence and retrieval across every memory entity, run against an in-memory SQLite database, plus API-level tests over the `/memory` routes
+- **Phase 4** — unit tests for the pure analyzer/planner functions, an integration test that compiles and runs the actual LangGraph workflow, `AgentService` persistence tests, and API tests for every `/agents` route
+- **Phase 5** — unit tests for the recommender agent (including a test asserting it never recommends a problem outside the supplied pool), `ProblemPoolService` filtering, `RecommenderService` persistence, a full graph trace-order test, and API tests for the `/recommendations` routes
 
-# Run the full orchestrator workflow:
-curl -X POST http://localhost:8000/api/v1/agents/run -H "Content-Type: application/json" -d '{"cf_handle": "tourist"}'
+Tests run against an in-memory SQLite database (`aiosqlite`) via fixtures in `conftest.py`, so the full suite does not require a running PostgreSQL instance. A separate, opt-in `mock_cf_network` fixture lets recommender tests run offline against deterministic fixture data, while the Codeforces client's own tests still exercise the live request/response shape through `respx`.
 
-# Frontend
-cd frontend
-npm install
-npm run dev
-# visit /agents and /agents/planner
-```
-
-### Verification checklist
-
-- [ ] `pip install -r backend/requirements.txt` succeeds (langgraph/langchain were already pinned in Phase 3's requirements.txt - no new packages needed)
-- [ ] `alembic upgrade head` (from `backend/`) creates the 5 new Phase 4 tables without error
-- [ ] `cd backend && pytest -q` - all Phase 1, 2, 3, and 4 tests pass
-- [ ] `POST /api/v1/codeforces/ingest` for a real handle, then `POST /api/v1/agents/run` for that handle returns `run.status == "completed"` with exactly 4 traces in order `RetrieveMemory, AnalyzerAgent, PlannerAgent, PersistMemory`
-- [ ] `GET /api/v1/agents/history?cf_handle=...` lists the run; `GET /api/v1/agents/traces?agent_run_id=...` returns its 4 trace rows
-- [ ] `GET /api/v1/memory/profile/{handle}` shows `strengths` / `weaknesses` populated after an agent run (confirms PersistMemory wrote back through the existing Phase 3 `MemoryService`)
-- [ ] Frontend: `/agents` and `/agents/planner` both load, the "Run Analyzer Agent" / "Generate Study Plan" buttons trigger real backend runs, and the trace panel renders the 4-step execution
-- [ ] No conditional routing, reflection loops, recommender/explainer agent, or RAG logic was introduced (confirm by grepping `app/agents/graph.py` - only the 4 linear nodes + `START`/`END` edges exist)
-
-### Explicitly NOT implemented in this phase
-
-Per the Phase 4 brief: reflection loops, conditional routing, the Problem Recommender Agent, the Explainer Agent, and RAG retrieval. The Learning Recommendations Panel surfaces priority topics/practice goals derived from the Analyzer/Planner output plus any already-stored `Recommendation` rows - it does not generate new recommendations itself, since that's the future Recommender Agent's job.
-
-### Note on test execution in this environment
-
-This sandbox has no network access and no Python packages preinstalled (no `fastapi`, `langgraph`, etc.), so `pytest` could not be executed here to confirm runtime behavior - every new file was syntax-checked with `python -m py_compile` and reviewed line-by-line against the existing Phase 1-3 code patterns (especially `tests/test_phase3.py`'s fixture/override style and `app/agents/graph.py`'s LangGraph 0.1.x API usage), but you should run `pytest -q` yourself after `pip install -r requirements.txt` to confirm everything passes in a real environment before deploying.
-
----
-
-## Phase 5 — Problem Recommendation Engine + End-to-End AI Mentor Workflow
-
-Phase 5 is an **integration** phase: it wires the existing Phase 1-4 building blocks (Codeforces ingestion, memory, Analyzer/Planner agents, LangGraph orchestration, the React dashboard) into a single one-button product experience, and adds exactly one new agent - the **Problem Recommender Agent** - which is the only genuinely new piece of logic. No Phase 1-4 API, model, or agent was redesigned, replaced, or rewritten; the graph, schemas, and services were *extended*.
-
-### What was implemented
-
-**Codeforces integration** (`backend/app/codeforces/client.py`)
-- `CodeforcesClient.get_problemset()` — fetches the real, live `problemset.problems` endpoint. This is the *only* source of problems the Recommender Agent is allowed to draw from; it never fabricates a problem.
-
-**Problem pool caching** (`backend/app/services/problem_pool_service.py`)
-- `ProblemPoolService` — an in-process, TTL-cached (6h) wrapper around `get_problemset()`, filtered down to rated, contest-linked problems. Avoids re-fetching the ~10k-problem set on every recommendation run.
-
-**Problem Recommender Agent** (`backend/app/agents/recommender.py`)
-- `run_recommender_agent(...)` — a pure function (no I/O, exactly like `analyzer.py` / `planner.py`) implementing the four recommendation strategies from the brief:
-  - **Reinforcement** — weak-topic problems near the user's current rating
-  - **Advancement** — harder problems in topics the user has already mastered
-  - **Recovery** — easier problems, triggered by a recent negative/fail streak
-  - **Contest prep** — a balanced, topic-agnostic A/B/C-style spread
-- Every candidate is selected from the `problem_pool` argument and filtered against `solved_keys` (the user's real CF solve history) and `recent_recommendation_keys` (to avoid repeats); returns per-problem `difficulty_match_score`, `estimated_solve_minutes`, a human-readable `recommendation_reason`, and a direct `url`.
-
-**I/O + persistence layer** (`backend/app/services/recommender_service.py`)
-- `RecommenderService` fetches the real CF problem pool + the user's real solved problems, calls the pure agent, and persists a `RecommendationSession` + `RecommendedProblem` rows. Also exposes `get_recommendations(...)` (with `pending`/`solved`/`bookmarked` filters) and `update_problem_status(...)` (solve/skip/bookmark/attempt), which also writes a `ProblemAttempt` row.
-
-**Database** (`backend/app/models/recommendation_engine.py`, migration `0003_phase5_recommendations`)
-- New tables, additive to every existing Phase 1-4 table: `recommendation_sessions`, `recommended_problems`, `problem_attempts`.
-
-**LangGraph** (`backend/app/agents/graph.py`, `backend/app/agents/state.py`)
-- The graph is extended from `START -> RetrieveMemory -> AnalyzerAgent -> PlannerAgent -> PersistMemory -> END` to:
-  `START -> RetrieveMemory -> AnalyzerAgent -> PlannerAgent -> RecommenderAgent -> PersistMemory -> END`
-- `build_mentor_graph(memory_service_factory, recommender_service_factory)` now takes a second, optional factory (defaults to building a `RecommenderService` over the same session, for backwards compatibility with any single-factory caller).
-
-**Orchestration** (`backend/app/services/agent_service.py`)
-- `AgentService.run_orchestrator(...)` now returns a `recommendations` key alongside `analysis`/`plan`, and the Agent Trace Panel / `AgentRun`/`AgentTrace` rows now include the `RecommenderAgent` step (5 traces per run instead of 4).
-
-**API** (`backend/app/api/routes/recommendations.py`, namespaced under `/api/v1/recommendations`)
-- `POST /api/v1/recommendations/generate` — generate fresh recommendations for a handle (runs the full orchestrator first if no analysis exists yet)
-- `GET  /api/v1/recommendations/{cf_handle}?status=pending|solved|bookmarked` — list recommendations
-- `PATCH /api/v1/recommendations/item/{id}` — `{"action": "solve"|"skip"|"bookmark"|"unbookmark"|"attempt"}`
-- `POST /api/v1/agents/run` now also returns a `recommendations` block (the same payload, generated as part of the single graph execution)
-
-**Frontend — the one-button experience**
-- `MentorHomePage` (`/`, new landing page) — single handle input + "Analyze My Profile" button. On click, it automatically calls, in order: `POST /codeforces/ingest`, `POST /agents/run` (which runs RetrieveMemory → Analyzer → Planner → Recommender → Persist server-side in one call), then confirms recommendations via `GET /recommendations/{handle}`, with a live step-by-step progress indicator. No Swagger, no manual API calls — exactly per the brief.
-- `MentorDashboardPage` (`/mentor`) — the full mentor product view in one page: CF profile stats, strengths/weaknesses/priority topics, the study plan (with a visual `LearningRoadmap`), recommended problem cards (Solve/Skip/Bookmark), and the `AgentTracePanel` showing the full Orchestrator → Analyzer → Planner → Recommender execution trace with timestamps and outputs. Includes a "Re-run Mentor Workflow" button for re-ingesting + re-running on demand.
-- `ProblemRecommendationsPage` (`/problems`) — a dedicated, filterable (pending/solved/bookmarked) problem browser plus a "Generate New Recommendations" action, for revisiting recommendations outside the main dashboard flow.
-- `LearningRoadmap` component — visualizes the Planner's milestones as a left-to-right (desktop) / stacked (mobile) roadmap with progress markers.
-- `ProblemCard` component — problem name/rating/tags, recommendation type badge, difficulty-match %, estimated solve time, a direct Codeforces link, and Solve/Skip/Bookmark buttons wired to the PATCH endpoint.
-- `recommendationsApi` added to `src/utils/api.ts`; `AgentTracePanel` updated to label/include the new `RecommenderAgent` node; Sidebar updated with "Home", "Mentor Dashboard", and "System Status" (the original Phase 1-4 dashboard, preserved unchanged at `/status`) entries.
-
-**Tests** - `backend/tests/test_phase5.py` (19 new tests)
-- Unit tests for `run_recommender_agent` — never fabricates problems outside the supplied pool, excludes solved/recently-recommended problems, reinforcement targets weak topics, recovery only triggers on a negative streak, handles an empty pool gracefully
-- `ProblemPoolService` test confirming it filters out unrated/no-contest problems
-- Integration tests for `RecommenderService` persistence (`RecommendationSession` + `RecommendedProblem` rows), `update_problem_status` (solve/bookmark + the resulting `ProblemAttempt` row), and status-filtered `get_recommendations`
-- A full `build_mentor_graph(...).ainvoke(...)` test confirming the 5-node trace order including `RecommenderAgent`
-- API tests for `POST /recommendations/generate`, `GET /recommendations/{handle}`, `PATCH /recommendations/item/{id}` (including a 422 on an invalid action), and `POST /agents/run` returning a populated `recommendations` block
-- **Phase 4's existing tests were updated** (not rewritten) only where they hardcoded the old 4-node trace count/order, since the graph now has 5 nodes — this is the direct, expected consequence of extending the documented graph, not a redesign
-- An `mock_cf_network` fixture (opt-in, not global-autouse) was added to `conftest.py` so Recommender tests run offline against deterministic fixture data; Phase 2's own real-HTTP `CodeforcesClient` tests are untouched and still exercise the live request/response shape via `respx`
-
-### Database migration
-
+Run the full suite with:
 ```bash
 cd backend
-pip install -r requirements.txt   # no new packages - httpx/langgraph were already pinned
-
-alembic upgrade head    # applies 0001 -> 0002 -> 0003_phase5_recommendations
+pytest -q
 ```
 
-### Running it end-to-end
-
+Or a single phase:
 ```bash
-# Backend
-cd backend
-pip install -r requirements.txt
-alembic upgrade head
-uvicorn app.main:app --reload
-
-# Frontend
-cd frontend
-npm install
-npm run dev
+pytest tests/test_phase4.py -v
 ```
 
-Then open the frontend, land on the new home page, enter a Codeforces handle (e.g. `tourist`), and click **Analyze My Profile**. You'll be redirected to `/mentor` showing analytics, the study plan + roadmap, real recommended Codeforces problems, and the full agent trace — with zero manual API calls.
+## Design Decisions
 
-### Verification checklist
+**Deterministic, rule-based agents instead of LLM-driven reasoning.** The Analyzer, Planner, and Recommender agents are implemented as pure functions with no I/O and no LLM calls. This keeps the core workflow fast, fully unit-testable, and runnable without any API key, at the cost of less nuanced reasoning than an LLM-backed agent would provide. An LLM-backed reasoning layer on top of the existing deterministic output is a natural extension point rather than a replacement.
 
-- [x] `pip install -r backend/requirements.txt` succeeds — no new packages were needed for Phase 5
-- [x] `alembic upgrade head` (from `backend/`) creates the 3 new Phase 5 tables (`recommendation_sessions`, `recommended_problems`, `problem_attempts`) without error
-- [x] `cd backend && pytest -q` — **73 passed** (Phase 1, 2, 3, 4, and 5 tests), verified in a real Python 3.12 environment with the project's pinned dependency versions
-- [x] `POST /api/v1/codeforces/ingest` then `POST /api/v1/agents/run` for a handle returns `run.status == "completed"` with **5** traces in order `RetrieveMemory, AnalyzerAgent, PlannerAgent, RecommenderAgent, PersistMemory`, and a populated `recommendations.recommendations` list
-- [x] `GET /api/v1/recommendations/{handle}` lists the persisted problems; `PATCH /api/v1/recommendations/item/{id}` with `{"action": "solve"}` marks it solved and writes a `ProblemAttempt` row
-- [x] Every recommended problem's `(contest_id, index)` exists in the real `problemset.problems` response - confirmed by the `test_recommender_agent_never_fabricates_problems` unit test
-- [x] Frontend: `npm run build` (`tsc && vite build`) succeeds cleanly with zero TypeScript errors
-- [x] Frontend: landing page (`/`) → enter handle → click "Analyze My Profile" → automatically calls ingest, agents/run, and recommendations, with a live progress indicator → redirects to `/mentor` showing the complete dashboard
-- [x] No Phase 1-4 API route, DB table/column, or agent function signature was removed or renamed — Phase 5 only adds new modules/tables/routes and extends `MentorGraphState` / `build_mentor_graph` / `AgentRunResult` with new, additive fields
+**Linear LangGraph workflow.** The graph has no conditional routing or reflection loops. This trades adaptability (the workflow cannot currently decide to skip or repeat a step based on intermediate results) for predictability and straightforward testing of the full pipeline.
 
-### Explicitly NOT implemented in this phase
+**Graceful degradation without a database.** The FastAPI application starts and serves non-persistent endpoints even if PostgreSQL is unreachable, rather than failing to boot. This makes local exploration of the API (via `/docs`) possible before a database is configured, at the cost of allowing the application to run in a state where most endpoints will fail.
 
-Per the Phase 5 brief's scope: this is an integration + recommender phase, not an infrastructure rewrite. The Explainer Agent and Reflection Agent remain unimplemented (left for future phases, as in Phase 4's README). The Recommender Agent is deterministic/rule-based (mirroring the Analyzer/Planner pattern) rather than LLM-driven, so it runs with zero external API keys and is fully unit-testable; an LLM-backed reasoning layer on top of it would be a natural Phase 6 addition.
+**Gemini called directly via REST instead of through an SDK.** The chat endpoint calls the Gemini REST API directly using `httpx` (already a project dependency for the Codeforces client) rather than adding the Gemini Python SDK. This avoids an additional dependency, at the cost of manually constructing the request/response handling that an SDK would otherwise provide.
+
+**Recommendations are constrained to a real problem pool.** The Recommender Agent receives the Codeforces problem set as an explicit argument and is structurally unable to invent a problem; this is enforced and verified by a dedicated unit test. The tradeoff is that recommendation quality depends entirely on the freshness and completeness of the cached problem pool.
+
+**Alembic introduced after initial schema creation.** Early tables were created via `Base.metadata.create_all()` rather than migrations; Alembic was introduced once the schema began evolving across phases, so the first migration assumes the base tables already exist (created via `init_db()`) rather than creating them itself.
+
+## Future Improvements
+
+Based on the existing architecture, realistic next steps include:
+
+- An Explainer Agent and Reflection Agent, both referenced in the memory schema's design but not yet implemented
+- Conditional routing or a reflection loop in the LangGraph workflow, so the orchestrator can adapt based on intermediate agent output
+- An LLM-backed reasoning layer on top of the deterministic Analyzer/Planner/Recommender output
+- Authentication and per-user access control, since the application currently scopes data by Codeforces handle without any login system
+- Deployment configuration (containerization, CI) — none is currently present in the repository
+- Expanding the LangSmith integration beyond optional tracing into a structured observability dashboard
+
+## License
+
+This project does not yet specify a license. Add a `LICENSE` file to define usage terms.

@@ -1,0 +1,63 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg-primary: #0f0f13;
+    --bg-secondary: #16161d;
+    --bg-card: #1c1c26;
+    --border: #2a2a3a;
+  }
+
+  body {
+    @apply bg-[#0f0f13] text-gray-100 antialiased;
+  }
+
+  * {
+    @apply border-[#2a2a3a];
+  }
+
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { @apply bg-transparent; }
+  ::-webkit-scrollbar-thumb { @apply bg-gray-700 rounded-full; }
+  ::-webkit-scrollbar-thumb:hover { @apply bg-gray-500; }
+}
+
+@layer components {
+  .card {
+    @apply bg-[#1c1c26] border border-[#2a2a3a] rounded-xl;
+  }
+
+  .btn-primary {
+    @apply bg-brand-600 hover:bg-brand-500 text-white font-medium px-4 py-2 rounded-lg
+           transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-brand-400;
+  }
+
+  .btn-secondary {
+    @apply bg-[#2a2a3a] hover:bg-[#333344] text-gray-200 font-medium px-4 py-2 rounded-lg
+           transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-gray-500;
+  }
+
+  .input {
+    @apply bg-[#16161d] border border-[#2a2a3a] text-gray-100 rounded-lg px-3 py-2
+           focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent
+           placeholder-gray-500 transition-all duration-150;
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium;
+  }
+
+  .badge-green  { @apply badge bg-emerald-900/40 text-emerald-300 border border-emerald-700/40; }
+  .badge-red    { @apply badge bg-red-900/40 text-red-300 border border-red-700/40; }
+  .badge-amber  { @apply badge bg-amber-900/40 text-amber-300 border border-amber-700/40; }
+  .badge-purple { @apply badge bg-purple-900/40 text-purple-300 border border-purple-700/40; }
+  .badge-blue   { @apply badge bg-blue-900/40 text-blue-300 border border-blue-700/40; }
+}
+
+/* Skeleton shimmer */
+@keyframes skeleton-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}

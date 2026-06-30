@@ -1,0 +1,41 @@
+# ── Web framework ──────────────────────────────────────────────────────────
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+python-multipart==0.0.9
+
+# ── Config / env ───────────────────────────────────────────────────────────
+python-dotenv==1.0.1
+pydantic==2.7.4
+pydantic-settings==2.3.4
+
+# ── Database ───────────────────────────────────────────────────────────────
+sqlalchemy==2.0.31
+alembic==1.13.2
+asyncpg==0.29.0
+psycopg2-binary==2.9.9
+
+# ── LangChain / LangGraph ──────────────────────────────────────────────────
+# NOTE: langchain-core is intentionally NOT pinned here.
+# langgraph 0.1.19 requires langchain-core>=0.2.22, while the previously
+# pinned 0.2.10 caused a ResolutionImpossible conflict. Letting pip resolve
+# langchain-core freely (it picks >=0.2.22, <0.3 — currently 0.2.43).
+langchain==0.2.6
+langchain-google-genai==1.0.7
+langchain-openai==0.1.14
+langchain-community==0.2.6
+langgraph==0.1.19
+langsmith==0.1.83
+
+# ── HTTP (CF API client) ───────────────────────────────────────────────────
+httpx==0.27.0
+
+# ── Testing ────────────────────────────────────────────────────────────────
+pytest==8.2.2
+pytest-asyncio==0.23.7
+respx==0.21.1
+
+# ── Testing — Phase 3 addition ──────────────────────────────────────────────
+# In-memory SQLite driver used only by tests/conftest.py so the Phase 3
+# memory-persistence tests exercise real CRUD without requiring a running
+# PostgreSQL instance in CI. Not used by the application at runtime.
+aiosqlite==0.20.0

@@ -1,0 +1,60 @@
+# =========================
+# Environment variables
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# =========================
+# Node
+# =========================
+node_modules/
+dist/
+build/
+
+# =========================
+# Database
+# =========================
+*.db
+*.sqlite
+*.sqlite3
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+
+# =========================
+# IDE files
+# =========================
+.vscode/
+.idea/
+
+# =========================
+# Logs
+# =========================
+*.log
+# Python packaging/build
+*.egg-info/
+.eggs/
+
+# Environment files
+.env.local
+.env.production
+.env.development
+
+# Coverage
+.coverage
+htmlcov/
+
+# Vite
+.vite/
